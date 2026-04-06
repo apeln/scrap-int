@@ -1,0 +1,30 @@
+[browser]
+headless = false
+viewport_width = 1440
+viewport_height = 1200
+page_load_timeout_ms = 120000
+initial_page_wait_ms = 5000
+short_wait_ms = 500
+suggestion_wait_ms = 1500
+confirm_wait_ms = 1000
+post_search_wait_ms = 30000
+results_settle_wait_ms = 5000
+browser_executables = [
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+]
+
+[sites]
+aircanada_url = "https://www.aircanada.com/home/ca/en/aco/flights"
+westjet_url = "https://www.westjet.com/en-ca"
+
+[notifications.email]
+enabled = false
+to = ["alexander.plsk@gmail.com"]
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+smtp_username = "your-email@gmail.com"
+smtp_password = "your-app-password"
+from_address = "your-email@gmail.com"
+use_tls = true
+subject_prefix = "Fareframe"

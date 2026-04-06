@@ -1,0 +1,2 @@
+"""Fareframe package."""
+
