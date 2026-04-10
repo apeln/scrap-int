@@ -10,6 +10,7 @@ from fareframe.core.registry import register_scraper
 from fareframe.models import FlightOffer, SearchRequest
 from fareframe.settings import get_settings
 
+
 def _validate_iso_date(value: str, field_name: str) -> date:
     try:
         return date.fromisoformat(value)
@@ -42,6 +43,8 @@ class AirCanadaScraper(BaseScraper):
 
         departure_date = _validate_iso_date(request.date, "date")
         return_date = _validate_iso_date(request.return_date, "return-date")
+        if departure_date < date.today():
+            raise ValueError("date must be today or later for live Air Canada searches")
         if return_date < departure_date:
             raise ValueError("return-date must be on or after date")
 
@@ -111,7 +114,7 @@ class AirCanadaScraper(BaseScraper):
                 self._select_airport(page, "destination", destination)
                 self._fill_roundtrip_dates(page, departure_date, return_date)
 
-                page.locator("#bkmg-desktop_findButton").click(force=True)
+                self._click_find_button(page)
                 self._wait_for_results_page(page)
 
                 current_url = page.url
@@ -143,7 +146,9 @@ class AirCanadaScraper(BaseScraper):
 
     def _ensure_round_trip(self, page) -> None:
         browser_settings = get_settings().browser
-        trip_toggle = page.locator("#bkmgFlights-trip-selector_tripTypeBtn")
+        trip_toggle = page.locator("#bkmgFlights-trip-selector_tripTypeBtn").first
+        if trip_toggle.count() == 0:
+            return
         if "Round-trip" in trip_toggle.inner_text():
             return
         trip_toggle.click()
@@ -153,24 +158,39 @@ class AirCanadaScraper(BaseScraper):
 
     def _select_airport(self, page, field: str, value: str) -> None:
         browser_settings = get_settings().browser
-        mapping = {
-            "origin": (
-                "#flightsOriginLocationbkmgLocationContainer",
-                'input[name="flightsOriginLocation"]:visible',
-                "#dynamicLocationFormflightsOriginLocation",
-            ),
-            "destination": (
-                "#flightsOriginDestinationbkmgLocationContainer",
-                'input[name="flightsOriginDestination"]:visible',
-                "#dynamicLocationFormflightsOriginDestination",
-            ),
-        }
-        container_selector, input_selector, form_selector = mapping[field]
-        page.locator(container_selector).click()
-        page.wait_for_timeout(browser_settings.short_wait_ms)
-        input_locator = page.locator(input_selector).first
-        input_locator.wait_for(state="visible")
-        input_locator.click(force=True)
+        label = "From" if field == "origin" else "To"
+        legacy_input_name = "flightsOriginLocation" if field == "origin" else "flightsOriginDestination"
+        container_selector = (
+            "#flightsOriginLocationbkmgLocationContainer"
+            if field == "origin"
+            else "#flightsOriginDestinationbkmgLocationContainer"
+        )
+
+        container = page.locator(container_selector).first
+        if container.count():
+            container.click()
+            page.wait_for_timeout(browser_settings.short_wait_ms)
+
+        legacy_input = page.locator(f'input[name="{legacy_input_name}"]').first
+        if legacy_input.count():
+            input_locator = legacy_input
+        else:
+            input_locator = self._find_first_visible(
+                page,
+                (
+                    f'input[placeholder="{label}"]:visible',
+                    f'input[aria-label="{label}"]:visible',
+                    f'input[aria-label*="{label}"]:visible',
+                    f'input[placeholder*="{label}"]:visible',
+                ),
+            )
+        if input_locator is None:
+            raise RuntimeError(f"Could not find the Air Canada {field} input")
+
+        try:
+            input_locator.click(force=True)
+        except Exception:
+            pass
         input_locator.evaluate(
             """(element, airportValue) => {
                 element.value = "";
@@ -182,22 +202,75 @@ class AirCanadaScraper(BaseScraper):
             value,
         )
         page.wait_for_timeout(browser_settings.suggestion_wait_ms)
-        option_locator = page.locator(f'{form_selector} [role="option"]', has_text=value).first
-        if option_locator.count() == 0:
-            raise RuntimeError(f"Air Canada did not show any {field} airport suggestions for '{value}'")
-        option_locator.evaluate("(e) => e.click()")
+
+        option_locator = self._find_first_visible(
+            page,
+            (
+                f'[role="option"]:visible >> text=/{re.escape(value)}/i',
+                f'button:visible >> text=/{re.escape(value)}/i',
+                f'[aria-label*="{value}"]:visible',
+            ),
+            timeout_ms=2_000,
+        )
+        if option_locator is not None:
+            option_locator.click(force=True)
+        else:
+            input_locator.press("ArrowDown")
+            page.wait_for_timeout(browser_settings.short_wait_ms)
+            input_locator.press("Enter")
+
         page.wait_for_timeout(browser_settings.confirm_wait_ms)
 
     def _fill_roundtrip_dates(self, page, departure_date: date, return_date: date) -> None:
         browser_settings = get_settings().browser
-        page.locator('input[name="bkmg-desktop_travelDates-formfield-1"]').fill(
-            departure_date.strftime("%d/%m")
+        departure_input = self._find_first_visible(
+            page,
+            (
+                'input[name="bkmg-desktop_travelDates-formfield-1"]:visible',
+                'input[aria-label*="Departure"]:visible',
+                'input[placeholder*="Departure"]:visible',
+            ),
         )
+        if departure_input is None:
+            departure_input = page.locator('input[placeholder="DD/MM"]:visible').nth(0)
+        departure_input.fill(departure_date.strftime("%d/%m"))
         page.wait_for_timeout(browser_settings.short_wait_ms)
-        page.locator('input[name="bkmg-desktop_travelDates-formfield-2"]').fill(
-            return_date.strftime("%d/%m")
+        return_input = self._find_first_visible(
+            page,
+            (
+                'input[name="bkmg-desktop_travelDates-formfield-2"]:visible',
+                'input[aria-label*="Return"]:visible',
+                'input[placeholder*="Return"]:visible',
+            ),
         )
+        if return_input is None:
+            return_input = page.locator('input[placeholder="DD/MM"]:visible').nth(1)
+        return_input.fill(return_date.strftime("%d/%m"))
         page.wait_for_timeout(browser_settings.short_wait_ms)
+
+    def _click_find_button(self, page) -> None:
+        button = self._find_first_visible(
+            page,
+            (
+                "#bkmg-desktop_findButton",
+                'button[aria-label="Search"]:visible',
+                'button[aria-label="Find"]:visible',
+            ),
+        )
+        if button is not None:
+            button.click(force=True)
+            return
+
+        search_buttons = page.locator("button:visible").filter(has_text=re.compile(r"^(Search|Find)$")).all()
+        for candidate in search_buttons:
+            try:
+                candidate.wait_for(state="visible", timeout=1_000)
+                candidate.click(force=True)
+                return
+            except Exception:
+                continue
+
+        raise RuntimeError("Could not find the Air Canada search button")
 
     def _wait_for_results_page(self, page) -> None:
         browser_settings = get_settings().browser
@@ -257,6 +330,16 @@ class AirCanadaScraper(BaseScraper):
             if offer is not None:
                 offers.append(offer)
         return offers
+
+    def _find_first_visible(self, page, selectors: tuple[str, ...], timeout_ms: int = 3_000):
+        for selector in selectors:
+            locator = page.locator(selector).first
+            try:
+                locator.wait_for(state="visible", timeout=timeout_ms)
+                return locator
+            except Exception:
+                continue
+        return None
 
     def _parse_offer_chunk(
         self,
